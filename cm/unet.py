@@ -357,7 +357,7 @@ class QKVFlashAttention(nn.Module):
         assert self.head_dim in [16, 32, 64], "Only support head_dim == 16, 32, or 64"
 
         self.inner_attn = FlashAttention(
-            attention_dropout=attention_dropout, **factory_kwargs
+            attention_dropout=attention_dropout, #**factory_kwargs
         )
         self.rearrange = rearrange
 
@@ -366,7 +366,7 @@ class QKVFlashAttention(nn.Module):
             qkv, "b (three h d) s -> b s three h d", three=3, h=self.num_heads
         )
         qkv, _ = self.inner_attn(
-            qkv,
+            qkv.contiguous(),
             key_padding_mask=key_padding_mask,
             need_weights=need_weights,
             causal=self.causal,

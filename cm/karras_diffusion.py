@@ -419,6 +419,79 @@ def karras_sample(
     return x_0.clamp(-1, 1)
 
 
+def karras_reconstruct(
+    input_image,
+    diffusion,
+    model,
+    shape,
+    steps,
+    clip_denoised=True,
+    progress=False,
+    callback=None,
+    model_kwargs=None,
+    device=None,
+    sigma_min=0.002,
+    sigma_max=80,  # higher for highres?
+    rho=7.0,
+    sampler="heun",
+    s_churn=0.0,
+    s_tmin=0.0,
+    s_tmax=float("inf"),
+    s_noise=1.0,
+    generator=None,
+    ts=None,
+):
+    if generator is None:
+        generator = get_generator("dummy")
+
+    if sampler == "progdist":
+        sigmas = get_sigmas_karras(steps + 1, sigma_min, sigma_max, rho, device=device)
+    else:
+        sigmas = get_sigmas_karras(steps, sigma_min, sigma_max, rho, device=device)
+
+    x_T = input_image # + generator.randn(*shape, device=device) * sigma_max
+    # x_T = generator.randn(*shape, device=device) * sigma_max
+
+    sample_fn = {
+        "heun": sample_heun,
+        "dpm": sample_dpm,
+        "ancestral": sample_euler_ancestral,
+        "onestep": sample_onestep,
+        "progdist": sample_progdist,
+        "euler": sample_euler,
+        "multistep": stochastic_iterative_sampler,
+    }[sampler]
+
+    if sampler in ["heun", "dpm"]:
+        sampler_args = dict(
+            s_churn=s_churn, s_tmin=s_tmin, s_tmax=s_tmax, s_noise=s_noise
+        )
+    elif sampler == "multistep":
+        sampler_args = dict(
+            ts=ts, t_min=sigma_min, t_max=sigma_max, rho=diffusion.rho, steps=steps
+        )
+    else:
+        sampler_args = {}
+
+    def denoiser(x_t, sigma):
+        _, denoised = diffusion.denoise(model, x_t, sigma, **model_kwargs)
+        if clip_denoised:
+            denoised = denoised.clamp(-1, 1)
+        return denoised
+
+    x_0 = sample_fn(
+        denoiser,
+        x_T,
+        sigmas,
+        generator,
+        progress=progress,
+        callback=callback,
+        **sampler_args,
+    )
+    return x_0.clamp(-1, 1)
+
+
+
 def get_sigmas_karras(n, sigma_min, sigma_max, rho=7.0, device="cpu"):
     """Constructs the noise schedule of Karras et al. (2022)."""
     ramp = th.linspace(0, 1, n)
@@ -785,14 +858,17 @@ def iterative_inpainting(
 
     image_size = x.shape[-1]
 
+    
+
     # create a blank image with a white background
     img = Image.new("RGB", (image_size, image_size), color="white")
-
     # get a drawing context for the image
     draw = ImageDraw.Draw(img)
 
     # load a font
-    font = ImageFont.truetype("arial.ttf", 250)
+    # font = ImageFont.truetype("arial.ttf", 250)
+    font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 250)
+    # font = ImageFont.load_default()
 
     # draw the letter "C" in black
     draw.text((50, 0), "S", font=font, fill=(0, 0, 0))
@@ -803,11 +879,18 @@ def iterative_inpainting(
     img_th = th.from_numpy(img_np).to(dist_util.dev())
 
     mask = th.zeros(*x.shape, device=dist_util.dev())
-    mask = mask.reshape(-1, 7, 3, image_size, image_size)
 
-    mask[::2, :, img_th > 0.5] = 1.0
-    mask[1::2, :, img_th < 0.5] = 1.0
-    mask = mask.reshape(-1, 3, image_size, image_size)
+    # mask = mask.reshape(-1, 7, 3, image_size, image_size)
+    # mask = mask.reshape(-1, 7, 3, image_size, image_size)
+    # mask = mask.reshape(-1,  3, image_size, image_size)
+
+    # mask[::2, :, img_th > 0.5] = 1.0
+    # mask[1::2, :, img_th < 0.5] = 1.0
+
+    mask[::2, img_th > 0.5] = 1.0
+    mask[1::2, img_th < 0.5] = 1.0
+
+    # mask = mask.reshape(-1, 3, image_size, image_size)
 
     def replacement(x0, x1):
         x_mix = x0 * mask + x1 * (1 - mask)
@@ -816,18 +899,18 @@ def iterative_inpainting(
     t_max_rho = t_max ** (1 / rho)
     t_min_rho = t_min ** (1 / rho)
     s_in = x.new_ones([x.shape[0]])
-    images = replacement(images, -th.ones_like(images))
+    y = replacement(images, -th.ones_like(images))
 
     for i in range(len(ts) - 1):
         t = (t_max_rho + ts[i] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho
         x0 = distiller(x, t * s_in)
         x0 = th.clamp(x0, -1.0, 1.0)
-        x0 = replacement(images, x0)
+        x0 = replacement(y, x0)
         next_t = (t_max_rho + ts[i + 1] / (steps - 1) * (t_min_rho - t_max_rho)) ** rho
         next_t = np.clip(next_t, t_min, t_max)
         x = x0 + generator.randn_like(x) * np.sqrt(next_t**2 - t_min**2)
 
-    return x, images
+    return x, y
 
 
 @th.no_grad()

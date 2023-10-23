@@ -79,6 +79,11 @@ image.save("consistency_model_multistep_sample_penguin.png")
 ```
 You can further speed up the inference process by using `torch.compile()` on `pipe.unet` (only supported from PyTorch 2.0). For more details, please check out the [official documentation](https://huggingface.co/docs/diffusers/main/en/api/pipelines/consistency_models). This support was contributed to 🧨 diffusers by [dg845](https://github.com/dg845) and [ayushtues](https://github.com/ayushtues).
 
+
+```
+wget https://github.com/JotJunior/PHP-Boleto-ZF2/blob/master/public/assets/fonts/arial.ttf
+```
+
 # Citation
 
 If you find this method and/or code useful, please consider citing

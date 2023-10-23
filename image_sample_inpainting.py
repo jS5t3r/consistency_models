@@ -19,7 +19,7 @@ from cm.script_util import (
     args_to_dict,
 )
 from cm.random_util import get_generator
-from cm.karras_diffusion import karras_sample
+from cm.karras_diffusion import karras_sample, iterative_inpainting
 
 
 def main():
@@ -39,8 +39,7 @@ def main():
         distillation=distillation,
     )
     model.load_state_dict(
-        # dist_util.load_state_dict(args.model_path, map_location="cpu")
-        dist_util.load_state_dict(args.model_path, map_location="cuda")
+        dist_util.load_state_dict(args.model_path, map_location="cpu")
     )
     model.to(dist_util.dev())
     if args.use_fp16:
@@ -54,17 +53,38 @@ def main():
     else:
         ts = None
 
+    print("get_generator)")
     generator = get_generator(args.generator, args.num_samples, args.seed)
 
-    sample = np.load("/home/lorenzp/workspace/consistency_model/run/openai-2023-10-20-18-56-56-517029/samples_10x256x256x3.npz")
-    images = torch.from_numpy(sample['arr_0']).to("cuda")
-    images = ((images / 255.) * 2) - 1
+    # sample = np.load("/home/lorenzp/workspace/consistency_model/run/openai-2023-10-20-18-56-56-517029/samples_10x256x256x3.npz")
+    # images = th.from_numpy(sample['arr_0'].transpose(0,3,1,2)).to("cuda:0")
+    # images = ((images / 255.) * 2) - 1
+    model_kwargs = {}
 
-    x_out, sample =  iterative_inpainting(
+    sample = karras_sample(
+        diffusion,
+        model,
+        (args.batch_size, 3, args.image_size, args.image_size),
+        steps=args.steps,
+        model_kwargs=model_kwargs,
+        device=dist_util.dev(),
+        clip_denoised=args.clip_denoised,
+        sampler=args.sampler,
+        sigma_min=args.sigma_min,
+        sigma_max=args.sigma_max,
+        s_churn=args.s_churn,
+        s_tmin=args.s_tmin,
+        s_tmax=args.s_tmax,
+        s_noise=args.s_noise,
+        generator=generator,
+        ts=ts,
+    )
+
+    x_out, sample = iterative_inpainting(
         distiller=model,
-        images,
-        x,
-        ts=range(2, 42),
+        images=sample,
+        x=generator.randn(*sample.shape, device=dist_util.dev()), #* sigma_max
+        ts=ts,
         t_min=0.002,
         t_max=80.0,
         rho=7.0,
@@ -72,56 +92,23 @@ def main():
         generator=generator,
     )
 
-    # sample = karras_sample(
-    #     diffusion,
-    #     model,
-    #     (args.batch_size, 3, args.image_size, args.image_size),
-    #     steps=args.steps,
-    #     model_kwargs=model_kwargs,
-    #     device=dist_util.dev(),
-    #     clip_denoised=args.clip_denoised,
-    #     sampler=args.sampler,
-    #     sigma_min=args.sigma_min,
-    #     sigma_max=args.sigma_max,
-    #     s_churn=args.s_churn,
-    #     s_tmin=args.s_tmin,
-    #     s_tmax=args.s_tmax,
-    #     s_noise=args.s_noise,
-    #     generator=generator,
-    #     ts=ts,
-    # )
-    # sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-    # sample = sample.permute(0, 2, 3, 1)
-    # sample = sample.contiguous()
+    x_out = ((x_out + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    x_out = x_out.permute(0, 2, 3, 1)
+    x_out = x_out.contiguous()
 
-        # gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
-        # dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
-        # all_images.extend([sample.cpu().numpy() for sample in gathered_samples])
-        # if args.class_cond:
-        #     gathered_labels = [
-        #         th.zeros_like(classes) for _ in range(dist.get_world_size())
-        #     ]
-        #     dist.all_gather(gathered_labels, classes)
-        #     all_labels.extend([labels.cpu().numpy() for labels in gathered_labels])
-        # logger.log(f"created {len(all_images) * args.batch_size} samples")
+    sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
+    sample = sample.permute(0, 2, 3, 1)
+    sample = sample.contiguous()
 
-    arr = np.concatenate(all_images, axis=0)
-    arr = arr[: args.num_samples]
-    if args.class_cond:
-        label_arr = np.concatenate(all_labels, axis=0)
-        label_arr = label_arr[: args.num_samples]
-    if dist.get_rank() == 0:
-        shape_str = "x".join([str(x) for x in arr.shape])
-        # out_path = os.path.join(logger.get_dir(), f"samples_{shape_str}.npz")
-        out_path = os.path.join(logger.get_dir().replace("/tmp/", ""), f"samples_{shape_str}.npz")
-        logger.log(f"saving to {out_path}")
-        if args.class_cond:
-            np.savez(out_path, arr, label_arr)
-        else:
-            np.savez(out_path, arr)
+    x_out = x_out.cpu().numpy()
+    sample = sample.cpu().numpy()
 
-    dist.barrier()
-    logger.log("inpainting complete")
+    shape_str = "x".join([str(x) for x in x_out.shape])
+    print("shape_str", shape_str)
+    out_path = os.path.join(logger.get_dir(), f"inpainting_x_out_{shape_str}.npz")
+    np.savez(out_path, x_out)
+    out_path = os.path.join(logger.get_dir(), f"inpainting_samples_{shape_str}.npz")
+    np.savez(out_path, sample)
 
 
 def create_argparser():
